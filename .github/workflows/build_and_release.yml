@@ -15,7 +15,7 @@ jobs:
   upload-release:
     if: ${{ (github.event_name == 'workflow_dispatch') || (github.event_name != 'pull_request') }}
     runs-on: ubuntu-20.04
-    needs: [build-mac, build-mac-arm, build-linux, build-windows]
+    needs: [build-mac, build-mac-arm, build-linux, build-windows, build-windows-arm64]
 
     steps:
     - uses: actions/checkout@v1
@@ -74,6 +74,16 @@ jobs:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./windows-uploads/sioyek-release-windows.zip
         asset_name: sioyek-release-windows.zip
+        asset_content_type: application/zip
+    - name: upload windows arm64
+      id: upload-windows-arm64
+      uses: actions/upload-release-asset@v1.0.1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./windows-arm64-uploads/sioyek-release-windows-arm64.zip
+        asset_name: sioyek-release-windows-arm64.zip
         asset_content_type: application/zip
 
   build-linux:
@@ -167,6 +177,36 @@ jobs:
       with:
         name: windows-uploads
         path: sioyek-release-windows.zip
+
+  build-windows-arm64:
+
+    runs-on: windows-11-arm
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+            submodules: 'recursive'
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.12.0'
+        host: 'windows_arm64'
+        target: 'desktop'
+        arch: 'win64_msvc2022_arm64'
+        modules: 'qtspeech'
+        cache: true
+
+    - name: Build Sioyek
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      shell: pwsh
+      run: ./build_windows_arm64.ps1 -QtDir $env:QT_ROOT_DIR
+
+    - name: upload windows arm64 artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-arm64-uploads
+        path: sioyek-release-windows-arm64.zip
         
   build-mac:
 
