@@ -20,6 +20,13 @@ struct MarkInDatabase {
     std::wstring uuid;
 };
 
+struct ReadingTime {
+    std::string checksum;
+    std::wstring document_name;
+    qint64 seconds = 0;
+    std::wstring last_read_time;
+};
+
 class DatabaseManager {
 private:
     std::recursive_mutex db_mutex;
@@ -32,7 +39,11 @@ private:
     void create_tables();
     bool create_document_hash_table();
     bool create_highlights_table();
+    bool create_reading_time_table();
 public:
+    bool add_reading_time(const std::string& checksum, int seconds);
+    bool select_reading_time(const std::string& checksum, qint64* out_seconds);
+    bool select_reading_times(int max_count, std::vector<ReadingTime>& out_result);
     bool open(const std::wstring& local_db_file_path, const std::wstring& global_db_file_path);
     bool select_opened_book(const std::string& book_path, std::vector<OpenedBookState>& out_result);
     bool insert_mark(const std::string& checksum,

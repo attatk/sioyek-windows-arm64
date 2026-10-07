@@ -87,6 +87,10 @@
 #include "path.h"
 #include "touchui/TouchMarkSelector.h"
 #include "checksum.h"
+#include "assistant.h"
+#include <QPointer>
+#include <QTimeZone>
+#include <QScrollBar>
 #include "touchui/TouchSettings.h"
 
 #include "main_widget.h"
@@ -231,6 +235,24 @@ extern std::wstring CONTEXT_MENU_ITEMS_FOR_BOOKMARKS;
 extern std::wstring CONTEXT_MENU_ITEMS_FOR_OVERVIEW;
 extern bool RIGHT_CLICK_CONTEXT_MENU;
 extern float SMOOTH_MOVE_MAX_VELOCITY;
+extern std::wstring AI_PROVIDER;
+extern std::wstring AI_MODEL;
+extern std::wstring AI_SYSTEM_PROMPT;
+extern int AI_MAX_CONTEXT_CHARACTERS;
+extern int CONTEXT_PAGE_RADIUS;
+extern bool TRACK_READING_TIME;
+extern int READING_IDLE_TIMEOUT_SECONDS;
+extern int BATTERY_SAVER_MODE;
+extern bool BATTERY_SAVER_ACTIVE;
+extern bool PEN_PRESSURE_SENSITIVITY;
+extern bool PEN_ERASER;
+extern int PALM_REJECTION_MILISECONDS;
+
+// smooth movement animations normally run the validation timer as fast as possible,
+// in battery saver mode they are capped at ~60 updates per second instead
+static int get_animation_interval() {
+    return BATTERY_SAVER_ACTIVE ? 16 : 0;
+}
 extern float PERSISTANCE_PERIOD;
 
 extern bool FORCE_CUSTOM_LINE_ALGORITHM;
@@ -572,7 +594,7 @@ void MainWidget::handle_selection_mouse_edge_scrolling(QMouseEvent* mouse_event)
     bool are_we_above_the_window = mapFromGlobal(mouse_event->globalPos()).y() < 30;
     bool are_we_below_the_window = mapFromGlobal(mouse_event->globalPos()).y() > main_window_height - 30;
     if (are_we_above_the_window){
-        validation_interval_timer->setInterval(0);
+        validation_interval_timer->setInterval(get_animation_interval());
         set_fixed_velocity(SMOOTH_MOVE_MAX_VELOCITY, 0);
         if (!is_mouse_edge_scrolling){
             last_speed_update_time = QTime::currentTime();
@@ -582,7 +604,7 @@ void MainWidget::handle_selection_mouse_edge_scrolling(QMouseEvent* mouse_event)
 
     }
     else if (are_we_below_the_window){
-        validation_interval_timer->setInterval(0);
+        validation_interval_timer->setInterval(get_animation_interval());
         set_fixed_velocity(-SMOOTH_MOVE_MAX_VELOCITY, 0);
         if (!is_mouse_edge_scrolling){
             last_speed_update_time = QTime::currentTime();
@@ -1296,6 +1318,15 @@ MainWidget::MainWidget(fz_context* mupdf_context,
         });
     validation_interval_timer->start();
 
+    update_battery_saver_state();
+    status_check_timer = new QTimer(this);
+    status_check_timer->setInterval(10 * 1000);
+    connect(status_check_timer, &QTimer::timeout, this, [this]() {
+        update_reading_time();
+        update_battery_saver_state();
+    });
+    status_check_timer->start();
+
 
     scroll_bar = new QScrollBar(this);
     QVBoxLayout* layout = new QVBoxLayout;
@@ -1383,6 +1414,8 @@ MainWidget::~MainWidget() {
         get_tts()->stop();
     }
     validation_interval_timer->stop();
+    status_check_timer->stop();
+    update_reading_time(true);
     remove_self_from_windows();
 
     if (tts) {
@@ -2564,7 +2597,7 @@ void MainWidget::handle_left_click(WindowPos click_pos, bool down, bool is_shift
                 velocity_x = -vel.x();
                 velocity_y = vel.y();
                 if (is_moving()) {
-                    validation_interval_timer->setInterval(0);
+                    validation_interval_timer->setInterval(get_animation_interval());
                 }
                 last_speed_update_time = QTime::currentTime();
             }
@@ -6821,6 +6854,14 @@ bool MainWidget::event(QEvent* event) {
             scratchpad->on_view_size_change(width(), height());
         }
     }
+    if (te) {
+        last_tablet_event_time = QDateTime::currentDateTime();
+    }
+    else if (should_reject_palm_event(event)) {
+        event->accept();
+        return true;
+    }
+
     if ((should_draw(true)) && te) {
         handle_pen_drawing_event(te);
         event->accept();
@@ -7440,6 +7481,252 @@ void MainWidget::show_command_documentation(QString command_name) {
     text_edit->setHtml(doc);
     push_current_widget(text_edit);
     text_edit->show();
+}
+
+QTextEdit* MainWidget::show_text_panel(const QString& markdown) {
+    QTextEdit* text_edit = new QTextEdit(this);
+    text_edit->setStyleSheet(get_status_stylesheet(false, DOCUMENTATION_FONT_SIZE));
+    int w = width() * 2 / 3;
+    int h = height() * 2 / 3;
+    text_edit->setReadOnly(true);
+    text_edit->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard | Qt::LinksAccessibleByMouse);
+    text_edit->move(width() / 2 - w / 2, height() / 2 - h / 2);
+    text_edit->resize(w, h);
+    text_edit->setMarkdown(markdown);
+    push_current_widget(text_edit);
+    text_edit->show();
+    return text_edit;
+}
+
+QString MainWidget::get_reading_context(bool include_selection) {
+    if (!doc()) return "";
+
+    int num_pages = doc()->num_pages();
+    int page = std::clamp(get_current_page_number(), 0, std::max(num_pages - 1, 0));
+
+    QString res = "Document: " + get_document_display_name(doc()) + "\n";
+    res += QString("Current page: %1 of %2").arg(page + 1).arg(num_pages);
+    QString label = QString::fromStdWString(doc()->get_page_label(page));
+    if (label.size() > 0 && label != QString::number(page + 1)) {
+        res += " (labeled \"" + label + "\")";
+    }
+    res += "\n";
+
+    if (include_selection) {
+        QString selected_text = QString::fromStdWString(get_selected_text()).trimmed();
+        if (selected_text.size() > 0) {
+            res += "\nSelected text:\n\"\"\"\n" + selected_text + "\n\"\"\"\n";
+        }
+    }
+
+    int first_page = std::max(0, page - CONTEXT_PAGE_RADIUS);
+    int last_page = std::min(num_pages - 1, page + CONTEXT_PAGE_RADIUS);
+    for (int i = first_page; i <= last_page; i++) {
+        res += QString("\nText of page %1:\n\"\"\"\n%2\n\"\"\"\n").arg(i + 1).arg(get_page_plain_text(doc(), i));
+    }
+    return res;
+}
+
+void MainWidget::ask_ai(const QString& title, const QString& instruction, const QString& context) {
+    QString trimmed_context = context;
+    QString header = "**" + title + "** · `" + QString::fromStdWString(AI_MODEL) + "`\n\n";
+    if (trimmed_context.size() > AI_MAX_CONTEXT_CHARACTERS) {
+        trimmed_context = trimmed_context.left(AI_MAX_CONTEXT_CHARACTERS);
+        header += QString("_The context was truncated to %1 characters (`ai_max_context_characters`)._\n\n").arg(AI_MAX_CONTEXT_CHARACTERS);
+    }
+
+    QPointer<QTextEdit> panel = show_text_panel(header + "_Waiting for a response..._");
+
+    auto set_panel_text = [panel, header](const QString& text) {
+        if (!panel) return;
+        QScrollBar* scrollbar = panel->verticalScrollBar();
+        bool was_at_bottom = scrollbar->value() >= scrollbar->maximum() - 4;
+        int old_value = scrollbar->value();
+        panel->setMarkdown(header + text);
+        scrollbar->setValue(was_at_bottom ? scrollbar->maximum() : old_value);
+    };
+
+    auto last_text = std::make_shared<QString>();
+    QNetworkReply* reply = send_ai_chat_request(&network_manager,
+        QString::fromStdWString(AI_SYSTEM_PROMPT),
+        instruction + "\n\n" + trimmed_context,
+        [set_panel_text, last_text](const QString& text) {
+            *last_text = text;
+            set_panel_text(text);
+        },
+        [set_panel_text, last_text, self = QPointer<MainWidget>(this)](const QString& error) {
+            // clears the network activity indicator in the status bar
+            if (self) self->invalidate_ui();
+            if (error.size() == 0) return;
+            QString message = *last_text;
+            if (message.size() > 0) message += "\n\n---\n\n";
+            message += "**The request failed:**\n\n```\n" + error.trimmed() + "\n```\n\n";
+            message += "Check `ai_provider` (currently `" + QString::fromStdWString(AI_PROVIDER) +
+                "`), `ai_api_url`, `ai_api_key` and `ai_model` in your `prefs_user.config`.";
+            set_panel_text(message);
+        });
+
+    // stop generating when the panel is closed
+    QObject::connect(panel, &QObject::destroyed, reply, [reply]() {
+        reply->abort();
+    });
+}
+
+void MainWidget::copy_reading_context() {
+    QString context = get_reading_context();
+    copy_to_clipboard(context.toStdWString());
+    set_status_message(QString("Copied %1 characters of context to the clipboard").arg(context.size()).toStdWString());
+    invalidate_ui();
+}
+
+bool MainWidget::export_annotations_markdown(const std::wstring& file_path) {
+    if (!doc() || file_path.size() == 0) return false;
+
+    QString path = QString::fromStdWString(file_path);
+    if (QFileInfo(path).suffix().size() == 0) {
+        path += ".md";
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        show_error_message(("Could not write to " + path).toStdWString());
+        return false;
+    }
+    file.write(annotations_to_markdown(doc()).toUtf8());
+    file.close();
+    set_status_message(("Exported annotations to " + path).toStdWString());
+    invalidate_ui();
+    return true;
+}
+
+void MainWidget::copy_annotations_markdown() {
+    if (!doc()) return;
+    copy_to_clipboard(annotations_to_markdown(doc()).toStdWString());
+    set_status_message(L"Copied annotations as Markdown to the clipboard");
+    invalidate_ui();
+}
+
+void MainWidget::show_reading_stats() {
+    update_reading_time(true);
+
+    QString res = "## Reading statistics\n\n";
+
+    if (doc()) {
+        qint64 seconds = 0;
+        db_manager->select_reading_time(doc()->get_checksum(), &seconds);
+        int num_pages = doc()->num_pages();
+        int page = std::max(get_current_page_number(), 0);
+        int percent = num_pages > 0 ? (page + 1) * 100 / num_pages : 0;
+
+        res += "**" + get_document_display_name(doc()) + "**\n\n";
+        res += QString("- Time spent reading: %1\n").arg(format_duration(seconds));
+        res += QString("- Progress: page %1 of %2 (%3%)\n").arg(page + 1).arg(num_pages).arg(percent);
+    }
+
+    std::vector<ReadingTime> reading_times;
+    db_manager->select_reading_times(30, reading_times);
+    if (reading_times.size() > 0) {
+        res += "\n### Most read documents\n\n| Document | Time | Last read |\n|---|---|---|\n";
+        for (const ReadingTime& item : reading_times) {
+            QString name = QString::fromStdWString(item.document_name);
+            if (name.size() == 0) {
+                std::vector<std::wstring> paths;
+                db_manager->get_path_from_hash(item.checksum, paths);
+                name = paths.size() > 0 ? QFileInfo(QString::fromStdWString(paths[0])).fileName() : QString::fromStdString(item.checksum).left(12);
+            }
+            name.replace('|', "\\|");
+            // sqlite's datetime('now') is in UTC
+            QDateTime last_read = QDateTime::fromString(QString::fromStdWString(item.last_read_time), "yyyy-MM-dd HH:mm:ss");
+            last_read.setTimeZone(QTimeZone::UTC);
+            res += "| " + name + " | " + format_duration(item.seconds) + " | " + last_read.toLocalTime().toString("yyyy-MM-dd HH:mm") + " |\n";
+        }
+    }
+    else if (!TRACK_READING_TIME) {
+        res += "\n_Reading time tracking is disabled (`track_reading_time`)._\n";
+    }
+
+    show_text_panel(res);
+}
+
+void MainWidget::update_reading_time(bool force_flush) {
+    QDateTime now = QDateTime::currentDateTime();
+    qint64 elapsed = last_reading_time_update.isValid() ? last_reading_time_update.secsTo(now) : 0;
+    last_reading_time_update = now;
+
+    std::string checksum = doc() ? doc()->get_checksum() : "";
+
+    // time is attributed to the document that was open while it was being counted
+    if (pending_reading_seconds > 0 && (checksum != pending_reading_checksum || force_flush || pending_reading_seconds >= 60)) {
+        db_manager->add_reading_time(pending_reading_checksum, pending_reading_seconds);
+        pending_reading_seconds = 0;
+    }
+
+    if (!TRACK_READING_TIME || !doc() || !isActiveWindow() || isMinimized()) return;
+
+    // any change to the view (scrolling, zooming, switching documents) counts as reading activity
+    QString view_state = QString::fromStdWString(doc()->get_path()) + QString(":%1:%2:%3")
+        .arg(main_document_view->get_offset_x())
+        .arg(main_document_view->get_offset_y())
+        .arg(main_document_view->get_zoom_level());
+    if (view_state != last_reading_view_state) {
+        last_reading_view_state = view_state;
+        last_reading_activity_time = now;
+    }
+
+    bool is_idle = !last_reading_activity_time.isValid() || last_reading_activity_time.secsTo(now) > READING_IDLE_TIMEOUT_SECONDS;
+    // large gaps mean the computer was asleep
+    if (!is_idle && elapsed > 0 && elapsed < 60) {
+        pending_reading_checksum = checksum;
+        pending_reading_seconds += elapsed;
+    }
+}
+
+void MainWidget::update_battery_saver_state() {
+    BATTERY_SAVER_ACTIVE = (BATTERY_SAVER_MODE == 2) || (BATTERY_SAVER_MODE == 1 && is_running_on_battery());
+}
+
+void MainWidget::erase_drawings_at(QPoint pos) {
+    // erase anything within a few pixels of the pen tip
+    const int radius = 8;
+    AbsoluteDocumentPos top_left = get_window_abspos(WindowPos{ pos.x() - radius, pos.y() - radius });
+    AbsoluteDocumentPos bottom_right = get_window_abspos(WindowPos{ pos.x() + radius, pos.y() + radius });
+    AbsoluteRect rect;
+    rect.x0 = std::min(top_left.x, bottom_right.x);
+    rect.x1 = std::max(top_left.x, bottom_right.x);
+    rect.y0 = std::min(top_left.y, bottom_right.y);
+    rect.y1 = std::max(top_left.y, bottom_right.y);
+
+    if (opengl_widget->get_scratchpad()) {
+        scratchpad->delete_intersecting_objects(rect);
+    }
+    else {
+        DocumentRect page_rect = rect.to_document(doc());
+        doc()->delete_page_intersecting_drawings(page_rect.page, rect, opengl_widget->visible_drawing_mask);
+    }
+    invalidate_render();
+}
+
+bool MainWidget::should_reject_palm_event(QEvent* event) {
+    if (PALM_REJECTION_MILISECONDS <= 0 || !last_tablet_event_time.isValid()) return false;
+    if (last_tablet_event_time.msecsTo(QDateTime::currentDateTime()) > PALM_REJECTION_MILISECONDS) return false;
+
+    switch (event->type()) {
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+    case QEvent::TouchEnd:
+    case QEvent::Gesture:
+        return true;
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::MouseMove: {
+        // mouse events that were synthesized from touch input
+        QMouseEvent* mouse_event = static_cast<QMouseEvent*>(event);
+        return mouse_event->device() && mouse_event->device()->type() == QInputDevice::DeviceType::TouchScreen;
+    }
+    default:
+        return false;
+    }
 }
 
 
@@ -8339,6 +8626,21 @@ void MainWidget::set_freehand_thickness(float val) {
 
 void MainWidget::handle_pen_drawing_event(QTabletEvent* te) {
 
+    // the eraser end of the pen (or the eraser button) deletes drawings instead of drawing
+    bool is_eraser = PEN_ERASER && te->pointerType() == QPointingDevice::PointerType::Eraser;
+    if (is_eraser || is_erasing_with_pen) {
+        if (te->type() == QEvent::TabletPress) {
+            is_erasing_with_pen = true;
+        }
+        if (is_erasing_with_pen && (te->type() == QEvent::TabletPress || te->type() == QEvent::TabletMove)) {
+            erase_drawings_at(te->position().toPoint());
+        }
+        if (te->type() == QEvent::TabletRelease) {
+            is_erasing_with_pen = false;
+        }
+        return;
+    }
+
     if (te->type() == QEvent::TabletPress) {
         start_drawing();
     }
@@ -8358,7 +8660,9 @@ void MainWidget::handle_pen_drawing_event(QTabletEvent* te) {
 }
 
 void MainWidget::handle_drawing_move(QPoint pos, float pressure) {
-    pressure = 0;
+    if (!PEN_PRESSURE_SENSITIVITY) {
+        pressure = 0;
+    }
     WindowPos current_window_pos = { pos.x(), pos.y() };
     AbsoluteDocumentPos mouse_abspos = get_window_abspos(current_window_pos);
     FreehandDrawingPoint fdp;
@@ -8370,7 +8674,8 @@ void MainWidget::handle_drawing_move(QPoint pos, float pressure) {
     }
 
     if (pressure > 0) {
-        fdp.thickness = freehand_thickness * (0.5f + pressure * 3) * thickness_zoom_factor;
+        // a medium pressure (0.5) draws with the configured thickness
+        fdp.thickness = freehand_thickness * (0.3f + pressure * 1.4f) * thickness_zoom_factor;
     }
     else {
         fdp.thickness = freehand_thickness * thickness_zoom_factor;
@@ -11348,7 +11653,7 @@ void MainWidget::handle_move_smooth_horizontal_hold(bool left) {
         velocity_x += (max_velocity - velocity_x) / 5.0f;
     }
 
-    validation_interval_timer->setInterval(0);
+    validation_interval_timer->setInterval(get_animation_interval());
     last_speed_update_time = QTime::currentTime();
 }
 
@@ -11363,7 +11668,7 @@ void MainWidget::handle_move_smooth_hold(bool down) {
         velocity_y += (max_velocity - velocity_y) / 5.0f;
     }
 
-    validation_interval_timer->setInterval(0);
+    validation_interval_timer->setInterval(get_animation_interval());
     last_speed_update_time = QTime::currentTime();
 }
 

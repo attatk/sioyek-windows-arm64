@@ -54,6 +54,7 @@ extern float FREETEXT_BOOKMARK_FONT_SIZE;
 extern bool FUZZY_SEARCHING;
 extern bool TOC_JUMP_ALIGN_TOP;
 extern bool FILL_TEXTBAR_WITH_SELECTED_TEXT;
+extern std::wstring AI_SUMMARIZE_PROMPT;
 extern bool SHOW_MOST_RECENT_COMMANDS_FIRST;
 extern bool INCREMENTAL_SEARCH;
 extern bool GG_USES_LABELS;
@@ -4155,6 +4156,92 @@ public:
 
 };
 
+class CopyContextCommand : public Command {
+public:
+    static inline const std::string cname = "copy_context";
+    static inline const std::string hname = "Copy page context for an LLM";
+    CopyContextCommand(MainWidget* w) : Command(cname, w) {};
+    void perform() {
+        widget->copy_reading_context();
+    }
+};
+
+class AiSummarizeCommand : public Command {
+public:
+    static inline const std::string cname = "ai_summarize";
+    static inline const std::string hname = "AI: summarize selection or page";
+    AiSummarizeCommand(MainWidget* w) : Command(cname, w) {};
+    void perform() {
+        widget->ask_ai("Summary", QString::fromStdWString(AI_SUMMARIZE_PROMPT), widget->get_reading_context());
+    }
+};
+
+class AiAskCommand : public TextCommand {
+public:
+    static inline const std::string cname = "ai_ask";
+    static inline const std::string hname = "AI: ask about selection or page";
+    AiAskCommand(MainWidget* w) : TextCommand(cname, w) {};
+
+    std::string text_requirement_name() {
+        return "Question";
+    }
+
+    std::wstring get_text_default_value() {
+        return L"";
+    }
+
+    void perform() {
+        QString question = QString::fromStdWString(text.value()).trimmed();
+        if (question.size() == 0) return;
+        widget->ask_ai(question, "Answer the following question using the document context below.\n\nQuestion: " + question, widget->get_reading_context());
+    }
+};
+
+class ExportAnnotationsMarkdownCommand : public Command {
+public:
+    static inline const std::string cname = "export_annotations_markdown";
+    static inline const std::string hname = "Export annotations to Markdown";
+    ExportAnnotationsMarkdownCommand(MainWidget* w) : Command(cname, w) {};
+
+    std::wstring file_name;
+
+    std::optional<Requirement> next_requirement(MainWidget* widget) {
+        if (file_name.size() == 0) {
+            return Requirement{ RequirementType::File, "File Path" };
+        }
+        return {};
+    }
+
+    void set_file_requirement(std::wstring value) {
+        file_name = value;
+    }
+
+    void perform() {
+        widget->export_annotations_markdown(file_name);
+    }
+};
+
+class CopyAnnotationsMarkdownCommand : public Command {
+public:
+    static inline const std::string cname = "copy_annotations_markdown";
+    static inline const std::string hname = "Copy annotations as Markdown";
+    CopyAnnotationsMarkdownCommand(MainWidget* w) : Command(cname, w) {};
+    void perform() {
+        widget->copy_annotations_markdown();
+    }
+};
+
+class ShowReadingStatsCommand : public Command {
+public:
+    static inline const std::string cname = "show_reading_stats";
+    static inline const std::string hname = "Show reading time and progress";
+    ShowReadingStatsCommand(MainWidget* w) : Command(cname, w) {};
+    void perform() {
+        widget->show_reading_stats();
+    }
+    bool requires_document() { return false; }
+};
+
 #ifdef Q_OS_MACOS
 class MacosLookupCommand : public Command {
 public:
@@ -7322,6 +7409,12 @@ CommandManager::CommandManager(ConfigManager* config_manager) {
     register_command<OpenDocumentEmbeddedCommand>();
     register_command<OpenDocumentEmbeddedFromCurrentPathCommand>();
     register_command<CopyCommand>();
+    register_command<CopyContextCommand>();
+    register_command<AiSummarizeCommand>();
+    register_command<AiAskCommand>();
+    register_command<ExportAnnotationsMarkdownCommand>();
+    register_command<CopyAnnotationsMarkdownCommand>();
+    register_command<ShowReadingStatsCommand>();
 #ifdef Q_OS_MACOS
     register_command<MacosLookupCommand>();
 #endif

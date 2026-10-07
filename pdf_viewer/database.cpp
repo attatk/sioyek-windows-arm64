@@ -1259,6 +1259,75 @@ void DatabaseManager::create_tables() {
     create_highlights_table();
     create_links_table();
     create_document_hash_table();
+    create_reading_time_table();
+}
+
+bool DatabaseManager::create_reading_time_table() {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex);
+    const char* create_reading_time_sql = "CREATE TABLE IF NOT EXISTS reading_time ("\
+        "document_hash TEXT PRIMARY KEY,"\
+        "seconds INTEGER NOT NULL DEFAULT 0,"\
+        "last_read_time TEXT);";
+
+    char* error_message = nullptr;
+    int error_code = sqlite3_exec(global_db, create_reading_time_sql, null_callback, 0, &error_message);
+    return handle_error("create_reading_time_table", error_code, error_message);
+}
+
+bool DatabaseManager::add_reading_time(const std::string& checksum, int seconds) {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex);
+    const char* sql = "INSERT INTO reading_time (document_hash, seconds, last_read_time) VALUES (?, ?, datetime('now')) "\
+        "ON CONFLICT(document_hash) DO UPDATE SET seconds = seconds + excluded.seconds, last_read_time = excluded.last_read_time;";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(global_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        qDebug() << "SQL Error in add_reading_time : " << sqlite3_errmsg(global_db);
+        return false;
+    }
+    sqlite3_bind_text(stmt, 1, checksum.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, seconds);
+    bool success = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return success;
+}
+
+bool DatabaseManager::select_reading_time(const std::string& checksum, qint64* out_seconds) {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex);
+    *out_seconds = 0;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(global_db, "SELECT seconds FROM reading_time WHERE document_hash = ?;", -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_text(stmt, 1, checksum.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *out_seconds = sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool DatabaseManager::select_reading_times(int max_count, std::vector<ReadingTime>& out_result) {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex);
+    const char* sql = "SELECT r.document_hash, COALESCE(o.document_name, ''), r.seconds, COALESCE(r.last_read_time, '') "\
+        "FROM reading_time r LEFT JOIN opened_books o ON o.path = r.document_hash "\
+        "ORDER BY r.seconds DESC LIMIT ?;";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(global_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        qDebug() << "SQL Error in select_reading_times : " << sqlite3_errmsg(global_db);
+        return false;
+    }
+    sqlite3_bind_int(stmt, 1, max_count);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        ReadingTime item;
+        item.checksum = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        item.document_name = utf8_decode(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
+        item.seconds = sqlite3_column_int64(stmt, 2);
+        item.last_read_time = utf8_decode(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3)));
+        out_result.push_back(item);
+    }
+    sqlite3_finalize(stmt);
+    return true;
 }
 
 bool update_string_value(sqlite3* db,

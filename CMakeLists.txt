@@ -34,6 +34,7 @@ qt_add_executable(sioyek WIN32 MACOSX_BUNDLE
     resources.qrc
     pdf_viewer/OpenWithApplication.cpp pdf_viewer/OpenWithApplication.h
     pdf_viewer/RunGuard.cpp pdf_viewer/RunGuard.h
+    pdf_viewer/assistant.cpp pdf_viewer/assistant.h
     pdf_viewer/book.cpp pdf_viewer/book.h
     pdf_viewer/checksum.cpp pdf_viewer/checksum.h
     pdf_viewer/config.cpp pdf_viewer/config.h
@@ -195,6 +196,8 @@ if(APPLE)
   # )
   target_link_libraries(sioyek PRIVATE
       "-framework AppKit"
+      "-framework IOKit"
+      "-framework CoreFoundation"
       -ldl
       -L${CMAKE_CURRENT_SOURCE_DIR}/mupdf/build/release
       -lmupdf

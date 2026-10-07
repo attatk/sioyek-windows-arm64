@@ -49,6 +49,7 @@ extern float OVERVIEW_OFFSET[2];
 extern float FASTREAD_OPACITY;
 extern bool PRERENDER_NEXT_PAGE;
 extern int PRERENDERED_PAGE_COUNT;
+extern bool BATTERY_SAVER_ACTIVE;
 extern bool SHOULD_HIGHLIGHT_LINKS;
 extern bool SHOULD_HIGHLIGHT_UNSELECTED_SEARCH;
 extern float UNSELECTED_SEARCH_HIGHLIGHT_COLOR[3];
@@ -1400,7 +1401,7 @@ void PdfViewOpenGLWidget::my_render(QPainter* painter) {
 
     if (document_view->is_presentation_mode()) {
         int presentation_page_number = document_view->get_presentation_page_number().value();
-        if (PRERENDER_NEXT_PAGE) {
+        if (PRERENDER_NEXT_PAGE && !BATTERY_SAVER_ACTIVE) {
             // request the next page so it is scheduled for rendering in the background thread
 
             for (int i = 0; i < NUM_PRERENDERED_NEXT_SLIDES; i++) {
@@ -1473,7 +1474,9 @@ void PdfViewOpenGLWidget::my_render(QPainter* painter) {
         if (visible_pages.size() > 0) {
             int num_pages = document_view->get_document()->num_pages();
             int max_page = visible_pages[visible_pages.size() - 1];
-            for (int i = 0; i < (PRERENDERED_PAGE_COUNT + 1); i++) {
+            // battery saver mode doesn't render pages ahead of time
+            int num_prerendered_pages = BATTERY_SAVER_ACTIVE ? 0 : PRERENDERED_PAGE_COUNT;
+            for (int i = 0; i < (num_prerendered_pages + 1); i++) {
                 if (max_page + i < num_pages) {
                     float page_width = document_view->get_document()->get_page_width(max_page + i);
                     float page_height = document_view->get_document()->get_page_height(max_page + i);

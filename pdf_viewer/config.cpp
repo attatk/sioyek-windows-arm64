@@ -71,6 +71,28 @@ std::wstring EXECUTE_COMMANDS[26];
 std::wstring TEXT_HIGHLIGHT_URL = L"http://localhost:5000/";
 std::wstring PAPER_SEARCH_URL = L"https://search.fatcat.wiki/fatcat_release/_search?q=%{query}";
 
+// any OpenAI-compatible server (OpenAI, OpenRouter, LM Studio, llama.cpp, vLLM, ...) or Ollama's native API
+std::wstring AI_PROVIDER = L"ollama";
+std::wstring AI_API_URL = L"http://localhost:11434";
+std::wstring AI_API_KEY = L"";
+std::wstring AI_MODEL = L"llama3.2";
+std::wstring AI_SYSTEM_PROMPT = L"You are a reading assistant built into a PDF viewer. Answer concisely and use Markdown.";
+std::wstring AI_SUMMARIZE_PROMPT = L"Summarize the following text. Keep the key ideas, definitions and results.";
+float AI_TEMPERATURE = -1;
+int AI_MAX_CONTEXT_CHARACTERS = 30000;
+int CONTEXT_PAGE_RADIUS = 0;
+
+bool TRACK_READING_TIME = true;
+int READING_IDLE_TIMEOUT_SECONDS = 300;
+
+// 0: off, 1: only when running on battery, 2: always
+int BATTERY_SAVER_MODE = 1;
+bool BATTERY_SAVER_ACTIVE = false;
+
+bool PEN_PRESSURE_SENSITIVITY = false;
+bool PEN_ERASER = true;
+int PALM_REJECTION_MILISECONDS = 500;
+
 std::wstring PAPER_SEARCH_URL_PATH = L"hits.hits[]._source.best_pdf_url";
 std::wstring PAPER_SEARCH_TILE_PATH = L"hits.hits[]._source.title";
 std::wstring PAPER_SEARCH_CONTRIB_PATH = L"hits.hits[]._source.contrib_names";
@@ -951,6 +973,7 @@ ConfigManager::ConfigManager(const Path& default_path, const Path& auto_path, co
     add_float(L"menu_screen_width_ratio", &MENU_SCREEN_WDITH_RATIO, FloatExtras{0.0f, 1.0f});
     add_float(L"menu_screen_width_ratio", &MENU_SCREEN_WDITH_RATIO, FloatExtras{0.0f, 1.0f});
     add_float(L"smooth_scroll_speed", &SMOOTH_SCROLL_SPEED, FloatExtras{0.0f, 20.0f});
+    add_float(L"ai_temperature", &AI_TEMPERATURE, FloatExtras{-1.0f, 2.0f});
     add_float(L"smooth_scroll_drag", &SMOOTH_SCROLL_DRAG, FloatExtras{10.0f, 10000.0f});
     add_float(L"gamma", &GAMMA, FloatExtras{0.0f, 1.0f});
     add_float(L"highlight_delete_threshold", &HIGHLIGHT_DELETE_THRESHOLD, FloatExtras{0.0f, 0.1f});
@@ -988,6 +1011,9 @@ ConfigManager::ConfigManager(const Path& default_path, const Path& auto_path, co
     add_bool(L"hide_overlapping_link_labels", &HIDE_OVERLAPPING_LINK_LABELS);
     add_bool(L"real_page_separation", &REAL_PAGE_SEPARATION);
     add_bool(L"fill_textbar_with_selected_text", &FILL_TEXTBAR_WITH_SELECTED_TEXT);
+    add_bool(L"track_reading_time", &TRACK_READING_TIME);
+    add_bool(L"pen_pressure_sensitivity", &PEN_PRESSURE_SENSITIVITY);
+    add_bool(L"pen_eraser", &PEN_ERASER);
     add_bool(L"align_link_dest_to_top", &ALIGN_LINK_DEST_TO_TOP);
     add_bool(L"check_for_updates_on_startup", &SHOULD_CHECK_FOR_LATEST_VERSION_ON_STARTUP);
     add_bool(L"sort_bookmarks_by_location", &SORT_BOOKMARKS_BY_LOCATION);
@@ -1069,6 +1095,12 @@ ConfigManager::ConfigManager(const Path& default_path, const Path& auto_path, co
     add_string(L"shift_middle_click_search_engine", &SHIFT_MIDDLE_CLICK_SEARCH_ENGINE);
     add_string(L"text_summary_url", &TEXT_HIGHLIGHT_URL);
     add_string(L"paper_search_url", &PAPER_SEARCH_URL);
+    add_string(L"ai_provider", &AI_PROVIDER);
+    add_string(L"ai_api_url", &AI_API_URL);
+    add_string(L"ai_api_key", &AI_API_KEY);
+    add_string(L"ai_model", &AI_MODEL);
+    add_string(L"ai_system_prompt", &AI_SYSTEM_PROMPT);
+    add_string(L"ai_summarize_prompt", &AI_SUMMARIZE_PROMPT);
     add_string(L"papers_folder_path", &PAPERS_FOLDER_PATH);
     add_string(L"scan_path", &BOOK_SCAN_PATH);
     add_string(L"context_menu_items", &CONTEXT_MENU_ITEMS);
@@ -1131,6 +1163,11 @@ ConfigManager::ConfigManager(const Path& default_path, const Path& auto_path, co
     add_int(L"text_summary_context_size", &TEXT_SUMMARY_CONTEXT_SIZE, IntExtras{1, 100});
     add_int(L"max_created_toc_size", &MAX_CREATED_TABLE_OF_CONTENTS_SIZE, IntExtras{1, 100000});
     add_int(L"prerendered_page_count", &PRERENDERED_PAGE_COUNT, IntExtras{0, 10});
+    add_int(L"ai_max_context_characters", &AI_MAX_CONTEXT_CHARACTERS, IntExtras{1000, 1000000});
+    add_int(L"context_page_radius", &CONTEXT_PAGE_RADIUS, IntExtras{0, 10});
+    add_int(L"reading_idle_timeout_seconds", &READING_IDLE_TIMEOUT_SECONDS, IntExtras{10, 3600});
+    add_int(L"battery_saver_mode", &BATTERY_SAVER_MODE, IntExtras{0, 2});
+    add_int(L"palm_rejection_miliseconds", &PALM_REJECTION_MILISECONDS, IntExtras{0, 5000});
     add_int(L"reload_interval_miliseconds", &RELOAD_INTERVAL_MILISECONDS, IntExtras{0, 10000});
     add_ivec2(L"main_window_size", MAIN_WINDOW_SIZE);
     add_ivec2(L"helper_window_size", HELPER_WINDOW_SIZE);

@@ -1,6 +1,8 @@
 #include <AppKit/AppKit.h>
 #include <QWidget>
 #import <Cocoa/Cocoa.h>
+#include <IOKit/ps/IOPowerSources.h>
+#include <IOKit/ps/IOPSKeys.h>
 
 extern "C" void showLookupForString(WId winId, const char* text, double x, double y) {
     if (winId == 0 || text == nullptr) return;
@@ -96,4 +98,13 @@ extern "C" void hideWindowTitleBar(WId winId) {
     [nativeWindow setTitleVisibility:NSWindowTitleHidden];
     [nativeWindow setStyleMask:[nativeWindow styleMask] | NSWindowStyleMaskFullSizeContentView];
     [nativeWindow setTitlebarAppearsTransparent:YES];
+}
+
+bool macos_is_on_battery() {
+    CFTypeRef info = IOPSCopyPowerSourcesInfo();
+    if (info == nullptr) return false;
+    CFStringRef source_type = IOPSGetProvidingPowerSourceType(info);
+    bool on_battery = source_type != nullptr && CFStringCompare(source_type, CFSTR(kIOPSBatteryPowerValue), 0) == kCFCompareEqualTo;
+    CFRelease(info);
+    return on_battery;
 }

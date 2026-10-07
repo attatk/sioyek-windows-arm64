@@ -294,6 +294,18 @@ public:
     QTimer* validation_interval_timer = nullptr;
     QDateTime last_persistance_datetime;
 
+    // runs every few seconds to track reading time and check the battery state
+    QTimer* status_check_timer = nullptr;
+    QDateTime last_reading_activity_time;
+    QDateTime last_reading_time_update;
+    QString last_reading_view_state;
+    int pending_reading_seconds = 0;
+    std::string pending_reading_checksum;
+
+    // used to ignore touch input from the palm while the pen is in use
+    QDateTime last_tablet_event_time;
+    bool is_erasing_with_pen = false;
+
     std::deque<ClickSpaceTime> recent_clicks;
 
     // the portal to be edited. This is usually set by `edit_portal` command which jumps to the portal
@@ -936,6 +948,18 @@ public:
     void load_command_docs();
     QString get_command_documentation(QString command_name);
     void show_command_documentation(QString command_name);
+
+    QTextEdit* show_text_panel(const QString& markdown);
+    QString get_reading_context(bool include_selection = true);
+    void ask_ai(const QString& title, const QString& instruction, const QString& context);
+    void copy_reading_context();
+    bool export_annotations_markdown(const std::wstring& file_path);
+    void copy_annotations_markdown();
+    void show_reading_stats();
+    void update_reading_time(bool force_flush = false);
+    void update_battery_saver_state();
+    void erase_drawings_at(QPoint window_pos);
+    bool should_reject_palm_event(QEvent* event);
 
     QString handle_action_in_menu(std::wstring action);
     std::wstring handle_synctex_to_ruler();
