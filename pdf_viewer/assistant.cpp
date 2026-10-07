@@ -235,7 +235,7 @@ QNetworkReply* send_ai_chat_request(QNetworkAccessManager* manager,
     messages.append(QJsonObject{ {"role", "user"}, {"content", user_prompt} });
 
     QJsonObject request_body;
-    request_body["model"] = QString::fromStdWString(AI_MODEL);
+    request_body["model"] = QString::fromStdWString(AI_MODEL).trimmed();
     request_body["messages"] = messages;
     request_body["stream"] = true;
     if (AI_TEMPERATURE >= 0) {

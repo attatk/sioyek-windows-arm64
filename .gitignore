@@ -343,6 +343,7 @@ healthchecksdb
 *.db
 sioyek-release/*
 sioyek-release-windows*/
+sioyek-setup-windows*.exe
 linux-deploy-binaries/*
 build/*
 .build

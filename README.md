@@ -47,6 +47,41 @@ openSUSE | [Factory](https://build.opensuse.org/package/show/openSUSE:Factory/si
 Ubuntu | [sioyek](https://packages.ubuntu.com/sioyek) | [@viccie30](https://github.com/viccie30)
 
 
+## Windows ARM64 and additions in this fork
+
+### Windows ARM64
+Native builds for Windows on ARM (e.g. Snapdragon X laptops) are published as:
+* `sioyek-setup-windows-arm64.exe`: installer with Start menu entries, an uninstaller and optional registration as a PDF viewer
+* `sioyek-release-windows-arm64.zip`: the same files as a zip
+* `sioyek-release-windows-arm64-portable.zip`: keeps its config files and database next to `sioyek.exe`
+
+Every release also has a `SHA256SUMS.txt`. To build locally, run `.\build_windows_arm64.ps1 -QtDir C:\Qt\<version>\msvc2022_arm64 [-Portable] [-Installer]`.
+
+### AI commands with your own endpoint
+`ai_summarize` summarizes the selected text (or the current page) and `ai_ask` answers a question about it. They work with any OpenAI-compatible server (OpenAI, OpenRouter, Groq, LM Studio, llama.cpp, vLLM, ...) or with Ollama. Configure them in `prefs_user.config`:
+```
+# local Ollama (the default)
+ai_provider ollama
+ai_api_url  http://localhost:11434
+ai_model    llama3.2
+
+# or any OpenAI-compatible endpoint
+ai_provider openai
+ai_api_url  https://api.openai.com/v1
+ai_api_key  $OPENAI_API_KEY
+ai_model    gpt-4o-mini
+```
+`ai_api_key` can name an environment variable, so the key doesn't have to be stored in the config file. Answers are streamed into a panel; press Escape to close it (closing it stops the request).
+
+### Other commands and options
+* `copy_context`: copies the document name, page number, selected text and page text, ready to paste into any chat. `context_page_radius` adds the surrounding pages.
+* `export_annotations_markdown` / `copy_annotations_markdown`: bookmarks and highlights (with their notes) as Markdown, grouped by page.
+* `show_reading_stats`: time spent reading each document and progress through the current one (`track_reading_time`, `reading_idle_timeout_seconds`).
+* `battery_saver_mode`: on battery, stops prerendering pages and caps animations at ~60fps.
+* `pen_pressure_sensitivity`, `pen_eraser`, `palm_rejection_miliseconds`: pressure-sensitive strokes, erasing with the pen's eraser end and ignoring the palm while writing.
+
+See `prefs.config` for all the new options.
+
 ## Documentation
 You can view the official documentation [here](https://sioyek-documentation.readthedocs.io/en/latest/).
 ## Feature Video Overview

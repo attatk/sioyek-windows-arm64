@@ -1,14 +1,24 @@
 # Builds a native Windows ARM64 sioyek (e.g. for Snapdragon X laptops) and packages it.
 #
-# Usage: .\build_windows_arm64.ps1 -QtDir C:\Qt\<version>\msvc2022_arm64 [-Portable]
+# Usage: .\build_windows_arm64.ps1 -QtDir C:\Qt\<version>\msvc2022_arm64 [-Portable] [-Installer]
+#                                  [-CertificatePath cert.pfx -CertificatePassword <password>]
 #
 # Requires Visual Studio with the ARM64 C++ build tools and an MSVC arm64 Qt kit
-# that includes Qt Speech. Produces sioyek-release-windows-arm64[-portable].zip
+# that includes Qt Speech. Produces sioyek-release-windows-arm64[-portable].zip.
+#
+#   -Portable     builds a portable sioyek that keeps its config and database next to sioyek.exe
+#   -Installer    also builds sioyek-setup-windows-arm64.exe (requires Inno Setup 6)
+#   -CertificatePath / -CertificatePassword
+#                 signs sioyek.exe (and the installer) with signtool; the password can also be
+#                 passed in the SIOYEK_SIGN_CERT_PASSWORD environment variable
 
 param(
     [Parameter(Mandatory = $true)]
     [string]$QtDir,
-    [switch]$Portable
+    [switch]$Portable,
+    [switch]$Installer,
+    [string]$CertificatePath,
+    [string]$CertificatePassword = $env:SIOYEK_SIGN_CERT_PASSWORD
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,8 +29,17 @@ function Invoke-Checked([scriptblock]$command) {
     if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code ${LASTEXITCODE}: $command" }
 }
 
+function Invoke-Sign([string]$file) {
+    if (-not $CertificatePath) { return }
+    Write-Host "Signing $file"
+    Invoke-Checked { signtool sign /f $CertificatePath /p $CertificatePassword /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $file }
+}
+
+if ($Portable -and $Installer) { throw 'The installer is built from the regular (non-portable) package; build it without -Portable' }
+
 $QtDir = (Resolve-Path $QtDir).Path
 if (-not (Test-Path (Join-Path $QtDir 'bin\qmake.exe'))) { throw "qmake.exe not found in $QtDir\bin" }
+if ($CertificatePath) { $CertificatePath = (Resolve-Path $CertificatePath).Path }
 
 # --- toolchain -------------------------------------------------------------
 if ($env:VSCMD_ARG_TGT_ARCH -ne 'arm64') {
@@ -33,6 +52,19 @@ if ($env:VSCMD_ARG_TGT_ARCH -ne 'arm64') {
     Set-Location $PSScriptRoot
 }
 $env:PATH = "$QtDir\bin;$env:PATH"
+
+$iscc = $null
+if ($Installer) {
+    $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+    if (-not $iscc) {
+        $iscc = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) was not found; install it from https://jrsoftware.org/isdl.php' }
+}
 
 # --- dependencies ----------------------------------------------------------
 Invoke-Checked { git submodule update --init --recursive }
@@ -48,7 +80,10 @@ try {
 finally { Pop-Location }
 
 # --- sioyek ----------------------------------------------------------------
-Invoke-Checked { qmake -tp vc "DEFINES+=NON_PORTABLE" "CONFIG+=release" pdf_viewer_build_config.pro }
+# a portable build looks for its config files and database next to sioyek.exe instead of in AppData
+$qmakeArgs = @('-tp', 'vc', 'CONFIG+=release', 'pdf_viewer_build_config.pro')
+if (-not $Portable) { $qmakeArgs = @('DEFINES+=NON_PORTABLE') + $qmakeArgs }
+Invoke-Checked { qmake @qmakeArgs }
 # msbuild would default to Win32, so pass the platform qmake generated (ARM64)
 $sioyekPlatform = (Select-Xml -Path sioyek.vcxproj -Namespace @{ m = 'http://schemas.microsoft.com/developer/msbuild/2003' } `
     -XPath '//m:ProjectConfiguration/m:Platform' | Select-Object -First 1).Node.InnerText
@@ -60,6 +95,7 @@ if (Test-Path $releaseDir) { Remove-Item -Recurse -Force $releaseDir }
 New-Item -ItemType Directory $releaseDir | Out-Null
 
 Copy-Item release\sioyek.exe $releaseDir
+Invoke-Sign (Join-Path $releaseDir 'sioyek.exe')
 Copy-Item pdf_viewer\keys.config, pdf_viewer\prefs.config, tutorial.pdf $releaseDir
 Copy-Item -Recurse pdf_viewer\shaders (Join-Path $releaseDir 'shaders')
 
@@ -83,5 +119,15 @@ if (Get-Command 7z -ErrorAction SilentlyContinue) {
 else {
     Compress-Archive -Path $releaseDir -DestinationPath $zipName
 }
-
 Write-Host "Done: $zipName"
+
+if ($Installer) {
+    $version = (Select-String -Path pdf_viewer_build_config.pro -Pattern '^VERSION\s*=\s*(\S+)').Matches[0].Groups[1].Value
+    $installerName = 'sioyek-setup-windows-arm64'
+    Invoke-Checked {
+        & $iscc /Q "/DSourceDir=$(Resolve-Path $releaseDir)" "/DOutputDir=$PSScriptRoot" "/DOutputBaseFilename=$installerName" `
+            '/DArch=arm64' "/DAppVersion=$version" scripts\sioyek_installer.iss
+    }
+    Invoke-Sign "$installerName.exe"
+    Write-Host "Done: $installerName.exe"
+}

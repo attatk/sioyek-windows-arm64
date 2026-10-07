@@ -82,9 +82,45 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./windows-arm64-uploads/sioyek-release-windows-arm64.zip
+        asset_path: ./windows-arm64-standard-uploads/sioyek-release-windows-arm64.zip
         asset_name: sioyek-release-windows-arm64.zip
         asset_content_type: application/zip
+    - name: upload windows arm64 portable
+      id: upload-windows-arm64-portable
+      uses: actions/upload-release-asset@v1.0.1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./windows-arm64-portable-uploads/sioyek-release-windows-arm64-portable.zip
+        asset_name: sioyek-release-windows-arm64-portable.zip
+        asset_content_type: application/zip
+    - name: upload windows arm64 installer
+      id: upload-windows-arm64-installer
+      uses: actions/upload-release-asset@v1.0.1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./windows-arm64-standard-uploads/sioyek-setup-windows-arm64.exe
+        asset_name: sioyek-setup-windows-arm64.exe
+        asset_content_type: application/vnd.microsoft.portable-executable
+    - name: compute checksums
+      run: |
+        find . -path ./.git -prune -o -type f \( -name 'sioyek-release-*.zip' -o -name 'sioyek-setup-*.exe' \) -print0 \
+          | xargs -0 sha256sum | sed 's#  .*/#  #' | sort -k2 > SHA256SUMS.txt
+        cat SHA256SUMS.txt
+    - name: upload checksums
+      id: upload-checksums
+      uses: actions/upload-release-asset@v1.0.1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./SHA256SUMS.txt
+        asset_name: SHA256SUMS.txt
+        asset_content_type: text/plain
+
 
   build-linux:
 
@@ -182,6 +218,16 @@ jobs:
 
     runs-on: windows-11-arm
 
+    strategy:
+      matrix:
+        # standard: zip + installer, portable: zip that keeps its config and database next to sioyek.exe
+        variant: [standard, portable]
+
+    env:
+      # optional code signing: a base64-encoded .pfx certificate and its password
+      SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
+      SIOYEK_SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+
     steps:
     - uses: actions/checkout@v4
       with:
@@ -197,16 +243,59 @@ jobs:
         modules: 'qtspeech qtmultimedia'
         cache: true
 
+    - name: Install Inno Setup
+      if: matrix.variant == 'standard'
+      shell: pwsh
+      run: |
+        if (Get-Command choco -ErrorAction SilentlyContinue) {
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed" }
+        }
+        else {
+          Invoke-WebRequest https://jrsoftware.org/download.php/is.exe -OutFile "$env:RUNNER_TEMP\innosetup.exe"
+          Start-Process "$env:RUNNER_TEMP\innosetup.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER' -Wait
+        }
+
+    - name: Prepare code signing certificate
+      if: env.SIGNING_CERTIFICATE != ''
+      shell: pwsh
+      run: |
+        $path = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+        [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE))
+        "SIOYEK_SIGN_CERT_PATH=$path" >> $env:GITHUB_ENV
+
     - name: Build Sioyek
       working-directory: ${{env.GITHUB_WORKSPACE}}
       shell: pwsh
-      run: ./build_windows_arm64.ps1 -QtDir $env:QT_ROOT_DIR
+      run: |
+        $params = @{ QtDir = $env:QT_ROOT_DIR }
+        if ('${{ matrix.variant }}' -eq 'portable') { $params.Portable = $true } else { $params.Installer = $true }
+        if ($env:SIOYEK_SIGN_CERT_PATH) { $params.CertificatePath = $env:SIOYEK_SIGN_CERT_PATH }
+        ./build_windows_arm64.ps1 @params
+
+    - name: Remove code signing certificate
+      if: always() && env.SIOYEK_SIGN_CERT_PATH != ''
+      shell: pwsh
+      run: Remove-Item -Force $env:SIOYEK_SIGN_CERT_PATH
+
+    - name: Smoke test
+      shell: pwsh
+      run: ./scripts/smoke_test_windows.ps1 -PackageDir sioyek-release-windows-arm64
+
+    # the runner has no GPU, so a failure here may be the runner's OpenGL support rather than sioyek
+    - name: Smoke test (open a document)
+      continue-on-error: true
+      shell: pwsh
+      run: ./scripts/smoke_test_windows.ps1 -PackageDir sioyek-release-windows-arm64 -LaunchGui
 
     - name: upload windows arm64 artifact
       uses: actions/upload-artifact@v4
       with:
-        name: windows-arm64-uploads
-        path: sioyek-release-windows-arm64.zip
+        name: windows-arm64-${{ matrix.variant }}-uploads
+        path: |
+          sioyek-release-windows-arm64*.zip
+          sioyek-setup-windows-arm64.exe
+        if-no-files-found: error
         
   build-mac:
 
